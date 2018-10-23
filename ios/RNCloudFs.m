@@ -1,7 +1,6 @@
 
 #import "RNCloudFs.h"
 #import <UIKit/UIKit.h>
-#import "RCTBridgeModule.h"
 #import "RCTEventDispatcher.h"
 #import "RCTUtils.h"
 #import <AssetsLibrary/AssetsLibrary.h>
