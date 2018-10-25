@@ -323,4 +323,156 @@ RCT_EXPORT_METHOD(copyToCloud:(NSDictionary *)options
     return [NSURL fileURLWithPath:resourcePath];
 }
 
+#pragma mark - get iCloud or local doc root
+RCT_EXPORT_METHOD(iCloudDocumentPath:(RCTResponseSenderBlock)callback)
+{
+    callback(@[@NO, [[self getICloudDocumentURL] path] ]);
+}
+RCT_EXPORT_METHOD(documentPath:(RCTResponseSenderBlock)callback)
+{
+    callback(@[@NO,  [self _documentPath] ]);
+}
+RCT_EXPORT_METHOD(getICloudDocumentURLByLocalPath:(NSString *)localPath :(RCTResponseSenderBlock)callback){
+    NSURL *url = [self getICloudDocumentURLByLocalPath:localPath];
+    callback(@[@NO,  [url absoluteString] ]);
+}
+
+#pragma mark - Remove/Replace File
+RCT_EXPORT_METHOD(removeICloudFile:(NSString *)path :(RCTResponseSenderBlock)callback){
+     NSFileManager* fileManager = [NSFileManager defaultManager];
+    [fileManager setUbiquitous:NO itemAtURL:[NSURL fileURLWithPath:path] destinationURL:[NSURL fileURLWithPath:path] error:nil];
+    [fileManager removeItemAtPath:path error:nil];
+}
+
+RCT_EXPORT_METHOD(replaceFileToICloud:(NSString *)localPath :(RCTResponseSenderBlock)callback)
+{
+    NSFileManager* fileManager = [NSFileManager defaultManager];
+    
+    NSURL *sourceURL = [NSURL fileURLWithPath:localPath];
+    NSURL *destinationURL = [self getICloudDocumentURLByLocalPath:localPath];
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self createDirectionOfFileURL:destinationURL];
+        
+        NSURL *tmpFileURL = [NSURL fileURLWithPath: [self createTempFile:sourceURL]];
+        NSError *err;
+        
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            
+            NSMetadataQuery *query = [self metaQueryWithPath:[destinationURL path]];
+            
+            //      [[NSNotificationCenter defaultCenter] addObserverForName:NSMetadataQueryDidFinishGatheringNotification object:query queue:nil usingBlock:^(NSNotification * _Nonnull note) {
+            //        NSDictionary *res =[self uploadProgress:query type:@"finish"];
+            //        callback(@[@NO, res]);
+            //      }];
+            [[NSNotificationCenter defaultCenter] addObserverForName:NSMetadataQueryDidUpdateNotification object:query queue:nil usingBlock:^(NSNotification * _Nonnull note) {
+                //        NSDictionary *res =[self uploadProgress:query type:@"finish"];
+                NSDictionary *result = [[self parseMetaQueryResult:query] objectAtIndex:0];
+                //        NSLog(@"replaceToICloud meta update %@",result);
+                if([[result objectForKey:@"isUploaded"] boolValue]){
+                    //          NSLog([result objectForKey:@"isUploaded"]);
+                    callback(@[@NO, result]);
+                    [query disableUpdates];
+                }
+                //
+            }];
+            [query startQuery];
+        });
+        if([fileManager fileExistsAtPath:[destinationURL path]]){
+            [fileManager removeItemAtURL:destinationURL error:nil];
+            
+        }
+        [fileManager setUbiquitous:YES itemAtURL:tmpFileURL destinationURL:destinationURL error:&err];
+        
+        if(err){
+            callback(@[[err localizedDescription]]);
+        }else {
+            //      callback(@[@NO, [destinationURL absoluteString]]);
+        }
+    });
+}
+
+#pragma mark - native methods
+- (NSString *)createTempFile:(NSURL *)url {
+    NSFileManager *fileManager = [[NSFileManager alloc] init];
+    //  NSLog(@"create tmp file %@, %i", url, [fileManager fileExistsAtPath:[url path]]);
+    if(![fileManager fileExistsAtPath:[url path]]){
+        NSLog(@"create tmp fail, source file not exists: %@", url);
+        return nil;
+    }
+    NSString *filename = [url lastPathComponent];
+    NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:filename];
+    [fileManager createDirectoryAtPath:tempPath withIntermediateDirectories:YES attributes:nil error:nil];
+    
+    if ( [fileManager fileExistsAtPath:tempPath] ) {
+        //    NSLog(@"remove existed: %@", tempPath);
+        NSError *removeErr;
+        [fileManager removeItemAtPath:tempPath error:&removeErr];
+        if (removeErr) {
+            NSLog(@"remove item err %@", [removeErr localizedDescription]);
+        }
+    }
+    
+    NSError *err;
+    BOOL tempCopied = [[self fileManager] copyItemAtPath:[url path] toPath:tempPath error:&err];
+    if(err)NSLog(@"create tmp err,%@, %@", tempPath, err);
+    if (tempCopied) {
+        return tempPath;
+    }else {
+        return nil;
+    }
+    //  return tempCopied;
+}
+- (void)createDirectionOfFileURL:(NSURL *)url {
+    NSURL *dir = [url URLByDeletingLastPathComponent];
+    [[[NSFileManager alloc] init] createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+}
+
+- (NSString *)_documentPath {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    return [paths objectAtIndex:0];
+}
+- (NSString*)getRelativePath:(NSString *)path {
+    //  NSString *docPath = [self _documentPath];
+    NSRange range = [path rangeOfString:@"/Documents/"];
+    NSString *relativePath = [path substringFromIndex:range.location+range.length];
+    //  NSLog(@"relative path input:%@ out:%@", path, relativePath);
+    return relativePath;
+}
+- (NSURL *)getDocumentURLByICloudPath: (NSString *)iCloudPath {
+    //  NSLog(@"rctmd5 of diary-item-2015-10-29, %@",RCTMD5Hash(@"diary-item-2015-10-29"));
+    //  NSString *relativePath = [self getRelativePath:iCloudPath];
+    //  NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+    //  NSString *icloudID = [NSString stringWithFormat:@"iCloud.%@", bundleIdentifier];
+    NSString *basePath = [[self getICloudDocumentURL] path];
+    NSRange range = [iCloudPath rangeOfString:basePath];
+    NSString *relativePath = [iCloudPath substringFromIndex:range.location+range.length+1];
+    //  NSLog(@"icloud basePath %@, relative: %@", basePath, relativePath);
+    
+    
+    NSURL *localURL = [[NSURL fileURLWithPath:[self _documentPath]] URLByAppendingPathComponent:relativePath];
+    //  NSLog(@"getDocumentURLByICloudPath \nrelative:%@\n\nsource:\n%@\n\ndest:\n%@ \n\n\n", relativePath, iCloudPath, localURL);
+    return localURL;
+}
+
+- (NSURL *)getICloudDocumentURLByLocalPath: (NSString *)localPath {
+    NSURL *docUrl = [self getICloudDocumentURL];
+    //  localPath = [self getRelativePathOfDocuments:localPath];
+    //  NSString *filename = [localPath lastPathComponent];
+    NSString *filename = [self getRelativePath:localPath];
+    NSURL *destinationURL = [docUrl URLByAppendingPathComponent:filename];
+    return destinationURL;
+}
+
+- (NSURL *)getICloudDocumentURL {
+    // get icloud docURL with default bundleID
+    NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+    NSString *icloudID = [NSString stringWithFormat:@"iCloud.%@", bundleIdentifier];
+    //  [NSFileManager URLForUbiquityContainerIdentifier:nil].path
+    NSURL *containerURL = [[NSFileManager defaultManager] URLForUbiquityContainerIdentifier:icloudID];
+    //  NSURL *containerURL = [[NSFileManager defaultManager] URLForUbiquityContainerIdentifier:nil];
+    NSURL *docUrl = [containerURL URLByAppendingPathComponent:@"Documents"];
+    
+    return docUrl;
+}
 @end
